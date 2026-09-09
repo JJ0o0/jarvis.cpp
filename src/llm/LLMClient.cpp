@@ -2,6 +2,7 @@
 #include <llm/Message.hpp>
 
 #include <nlohmann/json.hpp>
+#include <iostream>
 #include <vector>
 #include <string>
 
@@ -31,7 +32,7 @@ namespace jarvis::llm {
 		request["messages"] = messages;
 		request["stream"] = true;
 
-		std::string dumpedRequest = request.dump();
+		std::string dumpedRequest = request.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 
 		// FAZENDO REQUISIÇÃO HTTP
 		std::vector<std::string> headers{
@@ -41,32 +42,44 @@ namespace jarvis::llm {
 		std::string answer;
 		std::string streamBuffer;
 
-		http.Post(
-			"http://localhost:11434/api/chat",
-			dumpedRequest,
-			headers,
-			[&](const std::string& chunk) {
-				streamBuffer += chunk;
+		try {
+			http.Post(
+				"http://localhost:11434/api/chat",
+				dumpedRequest,
+				headers,
+				[&](const std::string& chunk) {
+					streamBuffer += chunk;
 
-				while (streamBuffer.find('\n') != std::string::npos) {
-					const std::size_t newlinePos = streamBuffer.find('\n');
-					const std::string line = streamBuffer.substr(0, newlinePos);
-					streamBuffer.erase(0, newlinePos + 1);
+					while (true) {
+						const std::size_t newlinePos = streamBuffer.find('\n');
+						if (newlinePos == std::string::npos) break;
 
-					try {
-						const nlohmann::json response = nlohmann::json::parse(line);
-						if (response.contains("message") && response["message"].contains("content")) {
-							const std::string content = response["message"]["content"];
-							answer += content;
+						const std::string line = streamBuffer.substr(0, newlinePos);
+						streamBuffer.erase(0, newlinePos + 1);
 
-							callback(content);
+						if (line.empty()) continue;
+
+						try {
+							const nlohmann::json response = nlohmann::json::parse(line);
+							if ((response.is_object() && response.contains("message") && response["message"].is_object())) {
+								const auto& msgObj = response["message"];
+								if (msgObj.contains("content") && msgObj["content"].is_string()) {
+									const std::string content = msgObj["content"].get<std::string>();
+									answer += content;
+
+									if (callback) callback(content);
+								}
+							}
 						}
-					} catch (const nlohmann::json::parse_error&) {
-						continue;
+						catch (...) {
+							continue;
+						}
 					}
 				}
-			}
-		);
+			);
+		} catch (...) {
+			std::cerr << "Excessão ativada no gerador do Client\n";
+		}
 
 		// PEGANDO RESPOSTA COMO JSON
 		m_conversation.AddMessage({
@@ -78,6 +91,10 @@ namespace jarvis::llm {
 	}
 
 	bool Client::IsAvailable() {
-		return !http.Get("http://localhost:11434").empty();
+		try {
+			return !http.Get("http://localhost:11434").empty();
+		} catch (...) {
+			return false;
+		}
 	}
 }
